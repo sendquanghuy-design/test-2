@@ -18,3 +18,6 @@ tabulate
 numpy
 python-docx
 
+#CẦN THIẾT CHO CÁC HÀM TÀI CHÍNH (NPV, IRR) vì chúng đã bị xóa khỏi NumPy core
+numpy-financial
+
