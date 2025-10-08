@@ -22,7 +22,7 @@ if "parameters" not in st.session_state:
     st.session_state.parameters = None
 if "cash_flow_df" not in st.session_state:
     st.session_state.cash_flow_df = None
-if "metrics" not not in st.session_state:
+if "metrics" not in st.session_state: # SỬA LỖI: Bỏ đi từ 'not' thừa
     st.session_state.metrics = None
 if "ai_analysis" not in st.session_state:
     st.session_state.ai_analysis = None
