@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import numpy_financial as npf
 from google import genai
 from google.genai.errors import APIError
 from docx import Document
