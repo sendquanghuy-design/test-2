@@ -1,14 +1,15 @@
 import streamlit as st
 import pandas as pd
-import numpy_financial as npf
+import numpy as np # Vẫn cần để dùng np.cumsum, np.where
+import numpy_financial as npf # CẦN CHO NPV, IRR
 from google import genai
 from google.genai.errors import APIError
 from docx import Document
 import json
 import io
-import time # For exponential backoff simulation (best practice)
+import time 
 
-# --- Thư viện cần thiết: streamlit, pandas, numpy, python-docx, google-genai ---
+# --- Thư viện cần thiết: streamlit, pandas, numpy, python-docx, google-genai, numpy-financial ---
 
 # --- Cấu hình Trang Streamlit ---
 st.set_page_config(
@@ -22,7 +23,7 @@ if "parameters" not in st.session_state:
     st.session_state.parameters = None
 if "cash_flow_df" not in st.session_state:
     st.session_state.cash_flow_df = None
-if "metrics" not in st.session_state: # SỬA LỖI: Bỏ đi từ 'not' thừa
+if "metrics" not in st.session_state: 
     st.session_state.metrics = None
 if "ai_analysis" not in st.session_state:
     st.session_state.ai_analysis = None
@@ -156,14 +157,14 @@ def calculate_metrics(df, wacc):
     """
     cash_flows = df['Dòng tiền Thuần (CF)'].values
     
-    # 1. NPV (Net Present Value)
-    npv_value = np.npv(wacc, cash_flows)
+    # 1. NPV (Net Present Value) - Sử dụng numpy_financial (npf)
+    npv_value = npf.npv(wacc, cash_flows)
     
-    # 2. IRR (Internal Rate of Return)
+    # 2. IRR (Internal Rate of Return) - Sử dụng numpy_financial (npf)
     try:
-        irr_value = np.irr(cash_flows)
+        irr_value = npf.irr(cash_flows)
     except:
-        irr_value = np.nan # Có thể không tính được nếu dòng tiền không đổi dấu
+        irr_value = np.nan # Gán NaN nếu không tính được (thường do dòng tiền không đổi dấu)
     
     # 3. Payback Period (PP) và Discounted Payback Period (DPP)
     
@@ -181,28 +182,36 @@ def calculate_metrics(df, wacc):
     # 4. PP (Payback Period)
     try:
         investment = abs(cash_flows[0])
-        payback_year = np.where(cumulative_cf >= 0)[0][0]
-        # Thời gian hoàn vốn = Năm trước + (Khoản còn thiếu / Dòng tiền năm đó)
-        if payback_year == 0:
-             pp_value = 0
+        # Kiểm tra nếu dòng tiền tích lũy không bao giờ dương (dự án không hoàn vốn)
+        if (cumulative_cf < 0).all():
+             pp_value = np.inf
         else:
-             cf_prior = cumulative_cf[payback_year - 1]
-             cf_at_payback = cash_flows[payback_year]
-             pp_value = (payback_year - 1) + (investment + cf_prior) / cf_at_payback
-    except:
+            payback_year = np.where(cumulative_cf >= 0)[0][0]
+            if payback_year == 0:
+                 pp_value = 0
+            else:
+                 cf_prior = cumulative_cf[payback_year - 1]
+                 cf_at_payback = cash_flows[payback_year]
+                 # Công thức nội suy cho thời gian hoàn vốn
+                 pp_value = (payback_year - 1) + abs(cf_prior) / cf_at_payback
+    except Exception:
         pp_value = np.inf # Không bao giờ hoàn vốn
 
     # 5. DPP (Discounted Payback Period) - Logic tương tự PP, dùng DCF
     try:
         discounted_investment = abs(discounted_cf[0])
-        dpp_year = np.where(cumulative_dcf >= 0)[0][0]
-        if dpp_year == 0:
-             dpp_value = 0
+        if (cumulative_dcf < 0).all():
+            dpp_value = np.inf
         else:
-             dcf_prior = cumulative_dcf[dpp_year - 1]
-             dcf_at_payback = discounted_cf[dpp_year]
-             dpp_value = (dpp_year - 1) + (discounted_investment + dcf_prior) / dcf_at_payback
-    except:
+            dpp_year = np.where(cumulative_dcf >= 0)[0][0]
+            if dpp_year == 0:
+                 dpp_value = 0
+            else:
+                 dcf_prior = cumulative_dcf[dpp_year - 1]
+                 dcf_at_payback = discounted_cf[dpp_year]
+                 # Công thức nội suy cho thời gian hoàn vốn chiết khấu
+                 dpp_value = (dpp_year - 1) + abs(dcf_prior) / dcf_at_payback
+    except Exception:
         dpp_value = np.inf
 
     return {
@@ -216,16 +225,21 @@ def get_ai_business_analysis(metrics, wacc, api_key):
     """
     Nhiệm vụ 4: Phân tích các chỉ số hiệu quả dự án bằng AI.
     """
+    
+    # Xử lý trường hợp IRR không tính được để gửi thông tin chính xác cho AI
+    irr_display = f"{metrics['IRR (Tỷ suất sinh lời nội bộ)']:.2%}" if not np.isnan(metrics['IRR (Tỷ suất sinh lời nội bộ)']) else "Không xác định (Dòng tiền không đổi dấu)"
+
     system_prompt = (
         "Bạn là một chuyên gia thẩm định dự án đầu tư. "
         "Dựa trên các chỉ số hiệu quả dự án sau, hãy đưa ra một đánh giá khách quan, "
         "ngắn gọn (khoảng 3 đoạn) về khả năng chấp nhận đầu tư của dự án. "
-        "Lưu ý: WACC (Chi phí vốn) là {wacc:.2%}. Dùng ngôn ngữ chuyên nghiệp và dễ hiểu."
+        "Lưu ý: WACC (Chi phí vốn) là {wacc:.2%}. Dùng ngôn ngữ chuyên nghiệp và dễ hiểu. "
+        "Đặc biệt nhấn mạnh vào mối quan hệ giữa IRR và WACC, cũng như ý nghĩa của NPV."
     ).format(wacc=wacc)
 
     metrics_text = (
         f"NPV (Giá trị hiện tại ròng): {metrics['NPV (Giá trị hiện tại ròng)']:.0f} VND\n"
-        f"IRR (Tỷ suất sinh lời nội bộ): {metrics['IRR (Tỷ suất sinh lời nội bộ)']:.2%}\n"
+        f"IRR (Tỷ suất sinh lời nội bộ): {irr_display}\n"
         f"PP (Thời gian hoàn vốn): {metrics['PP (Thời gian hoàn vốn)']:.2f} năm\n"
         f"DPP (Thời gian hoàn vốn chiết khấu): {metrics['DPP (Thời gian hoàn vốn chiết khấu)']:.2f} năm"
     )
@@ -329,9 +343,22 @@ if st.session_state.parameters:
         M = st.session_state.metrics
         
         metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-        
+
+        irr_value_display = f"{M['IRR (Tỷ suất sinh lời nội bộ)']:.2%}" if not np.isnan(M['IRR (Tỷ suất sinh lời nội bộ)']) else "N/A"
+        irr_color = 'green' if (not np.isnan(M['IRR (Tỷ suất sinh lời nội bộ)']) and M['IRR (Tỷ suất sinh lời nội bộ)'] > P['wacc']) else ('red' if not np.isnan(M['IRR (Tỷ suất sinh lời nội bộ)']) else 'gray')
+
+        if np.isinf(M['PP (Thời gian hoàn vốn)']):
+            pp_display = "Không hoàn vốn"
+        else:
+            pp_display = f"{M['PP (Thời gian hoàn vốn)']:.2f} năm"
+            
+        if np.isinf(M['DPP (Thời gian hoàn vốn chiết khấu)']):
+            dpp_display = "Không hoàn vốn"
+        else:
+            dpp_display = f"{M['DPP (Thời gian hoàn vốn chiết khấu)']:.2f} năm"
+
+        # Hiển thị NPV
         with metric_col1:
-            # NPV
             npv_color = 'green' if M['NPV (Giá trị hiện tại ròng)'] > 0 else 'red'
             st.markdown(f"""
             <div style='background-color:#f0f2f6; padding:15px; border-radius:10px; border-left: 5px solid {npv_color};'>
@@ -340,23 +367,25 @@ if st.session_state.parameters:
             </div>
             """, unsafe_allow_html=True)
             
+        # Hiển thị IRR
         with metric_col2:
-            # IRR
-            irr_color = 'green' if M['IRR (Tỷ suất sinh lời nội bộ)'] > P['wacc'] else 'red'
             st.markdown(f"""
             <div style='background-color:#f0f2f6; padding:15px; border-radius:10px; border-left: 5px solid {irr_color};'>
                 <small>IRR</small>
-                <h3 style='margin:0; color:{irr_color};'>{M['IRR (Tỷ suất sinh lời nội bộ)']:.2%}</h3>
+                <h3 style='margin:0; color:{irr_color};'>{irr_value_display}</h3>
             </div>
             """, unsafe_allow_html=True)
 
+        # Hiển thị PP
         with metric_col3:
-            # PP
-            st.metric("Thời gian Hoàn vốn (PP)", f"{M['PP (Thời gian hoàn vốn)']:.2f} năm")
+            st.metric("Thời gian Hoàn vốn (PP)", pp_display)
 
+        # Hiển thị DPP
         with metric_col4:
-            # DPP
-            st.metric("Hoàn vốn Chiết khấu (DPP)", f"{M['DPP (Thời gian hoàn vốn chiết khấu)']:.2f} năm")
+            st.metric("Hoàn vốn Chiết khấu (DPP)", dpp_display)
+            
+        if np.isnan(M['IRR (Tỷ suất sinh lời nội bộ)']):
+            st.warning("⚠️ **IRR không tính được.** Điều này thường xảy ra khi dòng tiền thuần không đổi dấu (ví dụ: tất cả các năm đều tạo ra dòng tiền dương).")
 
         st.markdown("---")
         st.markdown("### 4. Phân tích Chuyên sâu bởi AI")
